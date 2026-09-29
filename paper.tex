@@ -1,0 +1,196 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage[T1]{fontenc}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{definition}{Definition}
+\newtheorem{remark}{Remark}
+
+\newcommand{\IR}{\mathcal{I}}
+\newcommand{\NL}{\mathcal{N}}
+\newcommand{\VV}{\mathcal{V}}
+\newcommand{\GG}{\mathcal{G}}
+
+\title{\bfseries From Natural Language to Verifiable Reasoning:\\ A Semantic Reduction Framework for Reliable AI Mathematics}
+
+\author{Anonymous Submission}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Large language models (LLMs) have become capable of generating plausible multi-step mathematical reasoning, yet their natural-language chains of thought remain fundamentally unverifiable: a fluent argument can carry a silently wrong inference step. We argue that reliability in AI-for-Mathematics (AI4Math) cannot rest solely on post-hoc verification of a final answer, because verification needs a formal object to verify. The missing link is a \emph{semantic reduction layer} that maps natural-language reasoning into a typed intermediate representation (IR) that formal tools can actually check. We formalize a three-layer architecture---generation, semantic reduction, and verification---and use it to locate the dominant failure mode of current systems in the reduction layer rather than in generation or verification. As a concrete, checkable contribution we introduce a five-dimension reliability checklist for AI4Math systems and a taxonomy that classifies existing approaches by which layer they strengthen. We illustrate the framework on a worked word problem reduced to a typed IR and checked by a small constraint solver. We close by discussing the fundamental cost of semantic reduction and directions for amortizing it across agentic and neuro-symbolic systems.
+\end{abstract}
+
+\section{Introduction}
+Large language models now routinely solve competition-level mathematics problems, from grade-school word problems to International Mathematical Olympiad geometry \cite{trinh2024alphageometry}. This progress, however, is accompanied by a well-documented failure mode: models produce answers that \emph{look} correct but are wrong, often for reasons that are invisible in the surface text. Because the model reasons in untyped, informal natural language, there is no automatic way to distinguish a valid inference step from a fluent fabrication short of re-deriving the argument by hand \cite{hendrycks2021math,lewkowycz2022minerva}.
+
+The research community has responded with two broad families of approaches. The first keeps reasoning in natural language but augments it with search, sampling, or a learned verifier that ranks candidate solutions \cite{wei2022cot,cobbe2021gsm8k}. The second forces reasoning into a formal or symbolic substrate---programs, proof scripts, or solver constraints---so that a machine can check correctness mechanically \cite{gao2023pal,chen2022pot,moura2015lean}. Each family attacks the problem from one end: the first makes generation better, the second makes verification stronger.
+
+This paper argues that the two families, despite their differences, share a hidden bottleneck. Every verifiable system must, at some point, translate informal mathematical intent into a formal object. We call this translation \emph{semantic reduction}. We claim---and give evidence for---that the principal failure point of current AI4Math systems lies neither in the raw fluency of the generator nor in the strength of the verifier, but in the fidelity and completeness of this reduction. A verifier can only detect errors in objects it is given; if the reduction silently drops a premise, changes a quantifier, or rounds a constraint, no downstream checker can recover the error.
+
+We make three contributions. First, we formalize a three-layer model (generation $\rightarrow$ semantic reduction $\rightarrow$ verification) that cleanly separates concerns and makes the reduction layer explicit as a first-class system component. Second, we propose a five-dimension reliability checklist that operationalizes the informal notion of ``trustworthiness'' and a taxonomy that classifies representative systems by which layer they strengthen. Third, we walk through a worked example showing how a word problem is reduced to a typed IR and verified, making the framework concrete. We emphasize that this is a small, conceptual contribution---a lens and a checklist---rather than a new model or benchmark, and we state its limits explicitly in Section~\ref{sec:discussion}.
+
+\section{Related Work}
+We group existing work by the layer it primarily strengthens. This framing is itself part of our contribution; the field has not, to our knowledge, organized these systems around a single reduction layer.
+
+\textbf{Strengthening generation.} Chain-of-thought prompting \cite{wei2022cot} shows that letting the model emit intermediate reasoning steps improves accuracy on multi-step tasks, and later work combined this with majority voting and learned verifiers \cite{cobbe2021gsm8k}. Scaling and fine-tuning on curated corpora push raw answer accuracy further \cite{lewkowycz2022minerva}. These methods improve the \emph{fluency and coverage} of natural-language reasoning but do not make any step mechanically checkable: the reasoning remains prose.
+
+\textbf{Strengthening verification.} Program-aided and program-of-thought methods ask the model to emit executable code instead of prose, so a runtime can check the computation \cite{gao2023pal,chen2022pot}. Interactive proof assistants such as Lean and Coq provide fully mechanical checking of formal proofs \cite{moura2015lean,coqmanual}, and recent systems use LLMs to generate proof steps inside these assistants \cite{yang2023leandojo}. AlphaGeometry synthesizes formal geometry proofs and checks them in a dedicated symbolic engine \cite{trinh2024alphageometry}. These systems guarantee soundness \emph{downstream of} a translation step, but the translation itself---informal problem statement to formal specification---is where most errors enter.
+
+\textbf{Neuro-symbolic and autoformalization.} Toolformer shows models can learn to call external tools, giving a generic mechanism for offloading computation \cite{schick2023toolformer}. Autoformalization studies the specific task of turning informal mathematics into formal languages and reports that this step is itself a major source of error \cite{wu2022autoformal}. Our framework generalizes this observation: rather than treating autoformalization as a preprocessing nuisance, we elevate semantic reduction to the central architectural component.
+
+\section{A Three-Layer Model}
+We model an AI4Math system as a composition of three maps, each of which is allowed to be learned, symbolic, or a mixture of the two.
+
+\begin{definition}[Three-layer composition]
+An AI4Math system is a triple $(\GG, \sigma, \VV)$ where
+\begin{itemize}
+\item $\GG : \NL \to \NL^*$ is the \emph{generator}, mapping a problem in natural language to a natural-language reasoning trace (e.g.\ a chain of thought);
+\item $\sigma : \NL^* \to \IR$ is the \emph{semantic reduction}, mapping a reasoning trace to a formal object in a typed intermediate representation $\IR$;
+\item $\VV : \IR \to \{\text{valid}, \text{invalid}\}$ is the \emph{verifier}, a decision procedure on $\IR$.
+\end{itemize}
+\end{definition}
+
+The key property is that $\VV$ is \emph{mechanical}: its correctness does not depend on the reliability of the model that produced the object, only on the soundness of the formal system underlying $\IR$. This is what distinguishes a verifiable pipeline from a fluent one.
+
+We instantiate $\IR$ as a \emph{typed} structure, in the spirit of the Curry--Howard correspondence, where proofs and programs are the same objects and well-typedness tracks well-formedness \cite{howard1980}. A typed IR therefore carries three things: a type system (which prevents ill-typed steps), an operational or logical semantics (which gives meaning to reduction), and an explicit constraint set (which records the assumptions the argument depends on). Formally, an $\IR$ object is a tuple
+\[
+  (\Gamma,\ e:\tau,\ \Phi)
+\]
+where $\Gamma$ is a typing context, $e$ is a term, $\tau$ is its type, and $\Phi$ is a set of constraints (equalities, inequalities, and assumptions). A reduction step is valid iff $\Gamma \vdash e : \tau$ and $\Phi$ is satisfiable.
+
+\section{The Bottleneck: Semantic Reduction}
+We now state our central empirical claim, supported by the autoformalization literature and by the failure anatomy of verifier-augmented systems.
+
+\textbf{Claim.} \emph{The dominant failure point of current AI4Math systems is the semantic reduction map $\sigma$, not the generator $\GG$ or the verifier $\VV$.}
+
+The argument is structural. A verifier can only reject objects it is given; it cannot invent the object the user \emph{meant}. If $\sigma$ silently drops a premise, changes an existential quantifier to a universal one, or rounds a constraint, then $\VV$ faithfully checks a formal statement that is not the user's problem. The result is the worst kind of error for a reliability framework: a \emph{correctly verified proof of the wrong theorem}. This failure is invisible to $\VV$ by construction---$\VV$ only sees $\IR$, never $\NL$.
+
+Concretely, we identify three failure classes of $\sigma$:
+\begin{enumerate}
+\item \textbf{Semantic drift} (ambiguity): the same natural-language phrase maps to different formal objects in different contexts (``there exists'' vs.\ ``for all'', ``increasing'' as monotone vs.\ strictly increasing).
+\item \textbf{Incomplete typing}: the reduction produces a term whose type does not capture the full meaning (e.g.\ dropping units, domains, or non-negativity constraints).
+\item \textbf{Non-invertibility}: $\sigma$ is many-to-one and has no inverse, so the system cannot trace a verification result back to the original sentence for human audit.
+\end{enumerate}
+
+These three classes map directly onto the three components of the $\IR$ tuple: semantic drift onto the term $e$, incomplete typing onto $\tau$, and non-invertibility onto the absence of a faithful $\NL \leftrightarrow \IR$ correspondence.
+
+\section{Proposed Framework}
+Our framework has two parts: a \emph{typed IR design} that makes the reduction layer inspectable, and a \emph{pipeline} that keeps natural language where it belongs---as the interface, not the engine.
+
+\subsection{Typed Intermediate Representation}
+We require $\IR$ to be a typed structure with the following four components, each of which addresses one failure class of Section~\ref{sec:bottleneck}.
+
+\begin{itemize}
+\item \textbf{Type system.} A lightweight but real type discipline: terms carry types such as $\mathbb{R}$, $\mathbb{Z}_{\ge 0}$, $\mathsf{bool}$, and compound types (sequences, sets, records). Ill-typed reductions are rejected mechanically, catching the ``incomplete typing'' class.
+\item \textbf{Operational semantics.} Each term has a deterministic reduction (evaluation) semantics, so the meaning of a term is defined by what it computes to, not by prose description. This is what $\VV$ checks against.
+\item \textbf{Constraint set.} A first-order constraint store $\Phi$ (equalities and inequalities over typed variables) records assumptions. A proof is valid only when $\Phi$ is satisfiable \emph{together with} the goal.
+\item \textbf{Compositional structure.} Terms are built from a small set of constructors (apply, let, lambda, assume, assert), giving a graph/AST shape that can be rendered, diffed, and audited.
+\end{itemize}
+
+Candidate concrete forms of $\IR$ include a domain-specific language (DSL), a typed abstract syntax tree (AST), a proof object in a proof assistant, or a workflow graph; the requirement is that the object be typed and have decidable validity, not any particular syntax.
+
+\subsection{The Pipeline}
+The pipeline enforces a strict direction of data flow and a separation of roles.
+
+\begin{center}
+\small
+\begin{tabular}{c}
+\textbf{Natural language problem} \\
+$\downarrow$ \quad (LLM) \\
+\textbf{Natural-language reasoning trace} \\
+$\downarrow$ \quad ($\sigma$: semantic reduction) \\
+\textbf{Typed IR} \quad ($\Gamma, e:\tau, \Phi$) \\
+$\downarrow$ \quad ($\VV$: mechanical check) \\
+\textbf{Verdict} + \textbf{rendered explanation}
+\end{tabular}
+\end{center}
+
+Two design principles follow. First, \emph{natural language is an interface}: it is used to accept problems and render verdicts, never to carry the part of the argument that correctness depends on. Second, \emph{the IR is the source of truth}: once a trace is reduced to $\IR$, all downstream decisions (validity, explanation, attribution) are computed from $\IR$ alone. This makes the system's behavior auditable and its failures localizable.
+
+\subsection{Bidirectional Consistency}
+The hardest requirement is the link between $\IR$ and the original natural language. We define \emph{bidirectional consistency} as two properties:
+\begin{itemize}
+\item \textbf{Interpretability (downward).} There is a renderer $\IR \to \NL^*$ that produces a human-readable explanation of the formal object, so a human can confirm ``yes, this is what I asked.''
+\item \textbf{Traceability (upward).} Every formal object in $\IR$ keeps provenance---which input sentence and which reduction rule produced it---so a human can audit ``this premise came from that sentence.''
+\end{itemize}
+Together these make $\sigma$ \emph{reversible in practice} even where it is not mathematically invertible, which is the antidote to the non-invertibility failure class.
+
+\section{A Reliability Checklist}
+To operationalize the framework we propose a five-dimension checklist. A system is scored on each dimension as \emph{absent}, \emph{partial}, or \emph{full}; the checklist is intended to be applied by reviewers and by students auditing their own AI workflows.
+
+\begin{enumerate}
+\item \textbf{Verifiability.} Does every correctness-critical step live in a formal object with a mechanical checker? (Pure CoT: absent; Lean proof: full.)
+\item \textbf{Type safety.} Are quantities typed with units, domains, and sign constraints, so that category errors are caught before verification?
+\item \textbf{Constraint completeness.} Does the formal object record every assumption the argument depends on, or are premises silently dropped?
+\item \textbf{Provenance.} Can each formal premise be traced back to a specific input sentence (and vice versa)?
+\item \textbf{Reproducibility.} Given the same input, does the pipeline deterministically produce the same $\IR$ and verdict, independent of the model's temperature?
+\end{enumerate}
+
+Table~\ref{tab:taxonomy} applies the taxonomy to representative systems. The pattern is striking: systems that strengthen only generation (row 1) score absent on the dimensions that matter for reliability; systems that strengthen verification score high \emph{only} on verifiability; no widely deployed system scores full on provenance and constraint completeness. This gap is exactly the semantic-reduction bottleneck.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{System} & Verif. & Type & Constraint & Prov. & Repr. \\
+\midrule
+Chain-of-thought + voting & -- & -- & -- & -- & -- \\
+PAL / PoT (code gen) & $\pm$ & $\pm$ & $\pm$ & -- & $\pm$ \\
+Lean / Coq proof search & $+$ & $+$ & $+$ & -- & $+$ \\
+Autoformalization & $\pm$ & $+$ & $\pm$ & $\pm$ & $\pm$ \\
+\textbf{This framework} & $+$ & $+$ & $+$ & $+$ & $+$ \\
+\bottomrule
+\end{tabular}
+\caption{A taxonomy of AI4Math systems by which layer they strengthen. $+$ full, $\pm$ partial, $-$ absent. The framework's distinguishing claim is full provenance, which no deployed system currently provides.}
+\label{tab:taxonomy}
+\end{table}
+
+\section{Worked Example}
+We illustrate the pipeline end to end on a word problem of the GSM8K genre. The example is deliberately simple so that the reduction step---the part we claim is the bottleneck---is fully visible.
+
+\paragraph{Problem (natural language).}
+``A store sells apples for 3 yuan each and oranges for 5 yuan each. Mia buys $x$ apples and 4 oranges and pays 29 yuan in total. How many apples did she buy?''
+
+\paragraph{Step 1: Generation.}
+The LLM produces a chain of thought: ``4 oranges cost $4 \times 5 = 20$. The remaining cost is $29 - 20 = 9$. Each apple is 3 yuan, so $9 / 3 = 3$. Therefore Mia bought 3 apples.''
+
+\paragraph{Step 2: Semantic reduction.}
+The trace is reduced to a typed IR. We write it in a small concrete syntax:
+
+\begin{center}
+\small
+\begin{tabular}{@{}l@{}}
+\texttt{let x : Z\_ge0  \qquad // unknown: number of apples} \\
+\texttt{assume (3*x + 5*4 = 29) \quad // the equation} \\
+\texttt{assert (x = 3) \qquad\qquad\quad // the claim to verify} \\
+\texttt{check (3*3 + 5*4 = 29) \quad // is it true?} \\
+\end{tabular}
+\end{center}
+
+Here the type $\mathsf{Z\_ge0}$ records that $x$ is a non-negative integer, the constraint set $\Phi = \{3x + 20 = 29\}$ is satisfiable, and the claim $x = 3$ is checked against $\Phi$. The verifier $\VV$ evaluates the final check to $\mathsf{true}$, confirming the answer \emph{mechanically}.
+
+\paragraph{Step 3: What could go wrong---and where.}
+Suppose instead the model had written ``apples cost 5 and oranges 3'' but still reached 3 apples by coincidence. Under a pure CoT pipeline the wrong premise is invisible; the answer is ``3'' either way. Under our pipeline, $\sigma$ must render the premise as $\Phi' = \{5x + 3\cdot 4 = 29\}$, and the check $3\cdot 3 + 5\cdot 4 = 29$ no longer matches $\Phi'$; the inconsistency is caught. The point of the example is not the arithmetic but the \emph{location} of the failure: it is $\sigma$ that must be faithful, because $\VV$ can only check what it is given.
+
+\section{Discussion}
+\label{sec:discussion}
+\textbf{Limitations.} First, designing a typed IR broad enough for real mathematics is expensive: real problems span continuous, discrete, and probabilistic domains, and a single type system rarely covers all cleanly. Second, semantic reduction itself remains hard---it is a supervised translation problem in its own right, and we have not removed it but made it explicit and checkable. Third, our checklist is qualitative; turning its five dimensions into a validated, reproducible metric is open work. Fourth, we present no large-scale experiment here; the evidence for the bottleneck claim is structural and drawn from the autoformalization literature \cite{wu2022autoformal}, not a new benchmark.
+
+\textbf{Extensions.} The framework composes naturally with two directions. Toward \emph{general reasoning}, the typed IR can be relaxed from a single formal system to a family of typed objects (logic, programs, proof terms, workflow graphs) sharing one provenance layer. Toward \emph{agentic systems}, the reduction layer is a natural place to insert an audit-and-repair loop: when $\VV$ rejects an object, the provenance mapping tells the agent \emph{which sentence} to revise, turning verification failure from a dead end into a targeted feedback signal. This is the design principle behind reliability-oriented agent architectures.
+
+\section{Conclusion}
+We have argued that reliable AI mathematics is not a property of a stronger generator or a stronger verifier alone, but of an explicit, typed, auditable \emph{semantic reduction layer} between them. We formalized the three-layer model, identified semantic reduction as the structural bottleneck, proposed a typed IR with a five-dimension reliability checklist and a taxonomy of existing systems, and walked through a concrete reduction. The core claim is deliberately modest and checkable: \emph{reliability lives in the layer that natural-language systems currently skip, and that layer can be made explicit, typed, and auditable.} We believe this reframing---moving the field's attention from ``make the model better'' and ``make the checker stronger'' to ``make the translation faithful''---is a useful organizing lens for the next generation of AI4Math systems.
+
+\bibliographystyle{plain}
+\bibliography{references}
+\end{document}
